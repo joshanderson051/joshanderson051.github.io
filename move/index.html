@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="theme-color" content="#04050A">
+<title>Moving your station - Port Solace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500&display=swap">
+<style>
+  :root { --bg: #04050A; --amber: #E9A23B; --ivory: #F3E9D6; --dim: rgba(243, 233, 214, .62); --line: rgba(233, 162, 59, .35); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ivory); }
+  body { font: 400 16px/1.5 Barlow, system-ui, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px 16px; }
+  main { width: 100%; max-width: 30rem; }
+  .mark { font: 700 13px/1 'Barlow Condensed', system-ui, sans-serif; letter-spacing: .32em; color: var(--amber); margin: 0 0 18px; }
+  h1 { font: 600 clamp(28px, 7vw, 40px)/1.08 'Barlow Condensed', system-ui, sans-serif; margin: 0 0 14px; }
+  p { margin: 0 0 12px; color: var(--dim); }
+  #status { color: var(--ivory); }
+  #error { color: #F08C6C; }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+  a.btn { display: inline-block; font: 600 16px/1 'Barlow Condensed', system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase; text-decoration: none; padding: 12px 18px; border: 1px solid var(--amber); color: var(--bg); background: var(--amber); }
+  a.btn.ghost { background: transparent; color: var(--amber); }
+  a { color: var(--amber); }
+  [hidden] { display: none !important; }
+  .rule { height: 1px; background: var(--line); margin: 0 0 18px; }
+</style>
+</head>
+<body>
+<main>
+  <p class="mark">PORT SOLACE</p>
+  <div class="rule"></div>
+  <h1>Moving your station to portsolace.com</h1>
+  <p id="status">Packing your station from this browser...</p>
+  <p id="error" hidden></p>
+  <div id="big" hidden>
+    <p>Your station is too large to carry over in a link, so save it as a file and open it on the import page.</p>
+    <div class="actions">
+      <a class="btn" id="download" href="#" download="port-solace-station.json">Save port-solace-station.json</a>
+      <a class="btn ghost" id="importLink" href="https://portsolace.com/play/import.html">Open the import page</a>
+    </div>
+  </div>
+  <div class="actions" id="home" hidden>
+    <a class="btn ghost" href="https://portsolace.com/">Go to portsolace.com</a>
+  </div>
+  <noscript><p>This page needs JavaScript to move your station. Turn it on and reload, or go to <a href="https://portsolace.com/">portsolace.com</a>.</p></noscript>
+</main>
+<script id="bridge">
+(function () {
+  'use strict';
+
+  var PREFIX = 'waystation';
+  var MAX_PAYLOAD = 1000000;   // below Firefox's 1,048,576-character URL cap (network.standard-url.max-length); the contract's 1,500,000 is too high there
+  var HASH_KEY = '#ps-import=';
+  var ALLOWED_HTTPS = ['https://portsolace.com', 'https://www.portsolace.com'];
+  var IMPORT_PATH = '/play/import.html';
+
+  // returns the destination as a clean absolute URL string (no fragment), or null when it is not allowed
+  function validateTarget(to) {
+    if (typeof to !== 'string' || !to) return null;
+    var u;
+    try { u = new URL(to); } catch (e) { return null; }
+    if (u.username || u.password) return null;
+    var ok = ALLOWED_HTTPS.indexOf(u.origin) !== -1;
+    if (!ok && u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1') && /^\d+$/.test(u.port)) ok = true;
+    if (!ok) return null;
+    if (u.pathname.slice(-IMPORT_PATH.length) !== IMPORT_PATH) return null;
+    return u.origin + u.pathname + u.search;
+  }
+
+  // every localStorage key that starts with 'waystation', values as strings
+  function collectKeys(storage) {
+    var out = {}, names = [], i, k, v;
+    for (i = 0; i < storage.length; i++) {
+      k = storage.key(i);
+      if (typeof k === 'string' && k.indexOf(PREFIX) === 0) names.push(k);
+    }
+    for (i = 0; i < names.length; i++) {
+      v = storage.getItem(names[i]);
+      if (v !== null) out[names[i]] = String(v);
+    }
+    return out;
+  }
+
+  function buildEnvelope(keys, from, at) {
+    return { v: 1, from: from, at: at, keys: keys };
+  }
+
+  function base64url(bytes) {
+    var bin = '', CHUNK = 0x8000, i;
+    for (i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function gzip(bytes) {
+    var cs = new CompressionStream('gzip');
+    var writer = cs.writable.getWriter();
+    writer.write(bytes).catch(function () {});
+    writer.close().catch(function () {});
+    var reader = cs.readable.getReader(), chunks = [], total = 0;
+    function pump() {
+      return reader.read().then(function (r) {
+        if (r.done) {
+          var out = new Uint8Array(total), off = 0;
+          for (var j = 0; j < chunks.length; j++) { out.set(chunks[j], off); off += chunks[j].length; }
+          return out;
+        }
+        chunks.push(r.value); total += r.value.length;
+        return pump();
+      });
+    }
+    return pump();
+  }
+
+  // 'g.' + base64url(gzip(json)) when CompressionStream exists, else 'j.' + base64url(utf8(json))
+  function encodePayload(json) {
+    var bytes = new TextEncoder().encode(json);
+    if (typeof CompressionStream === 'function') {
+      return gzip(bytes).then(function (z) { return 'g.' + base64url(z); }, function () { return 'j.' + base64url(bytes); });
+    }
+    return Promise.resolve('j.' + base64url(bytes));
+  }
+
+  function tooLarge(payload) { return payload.length > MAX_PAYLOAD; }
+
+  function noneUrl(target) { return target + HASH_KEY + 'none'; }
+  function importUrl(target, payload) { return target + HASH_KEY + payload; }
+
+  var api = {
+    PREFIX: PREFIX, MAX_PAYLOAD: MAX_PAYLOAD,
+    validateTarget: validateTarget, collectKeys: collectKeys, buildEnvelope: buildEnvelope,
+    base64url: base64url, encodePayload: encodePayload, tooLarge: tooLarge, noneUrl: noneUrl, importUrl: importUrl
+  };
+  if (globalThis.__PS_BRIDGE_TEST__ === true) { globalThis.PortSolaceBridge = api; return; }
+
+  // ---------------------------------------------------------------- page
+  function $(id) { return document.getElementById(id); }
+  function fail(msg) {
+    $('status').hidden = true;
+    var e = $('error'); e.textContent = msg; e.hidden = false;
+    $('home').hidden = false;
+  }
+
+  var to = null;
+  try { to = new URLSearchParams(location.search).get('to'); } catch (e) { to = null; }
+  var target = validateTarget(to);
+  if (!target) { fail('This link does not point at the Port Solace import page, so nothing was sent. Start the move from the game at portsolace.com.'); return; }
+
+  var keys;
+  try { keys = collectKeys(window.localStorage); } catch (e) { fail('This browser blocked access to saved data, so the station could not be read.'); return; }
+
+  if (Object.keys(keys).length === 0) { location.replace(noneUrl(target)); return; }
+
+  var envelope = buildEnvelope(keys, location.origin, Date.now());
+  var json = JSON.stringify(envelope);
+  encodePayload(json).then(function (payload) {
+    if (!tooLarge(payload)) { location.replace(importUrl(target, payload)); return; }
+    $('status').hidden = true;
+    var url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+    $('download').href = url;
+    $('importLink').href = target;
+    $('big').hidden = false;
+  }).catch(function () {
+    fail('Something went wrong while packing your station. Reload the page to try again.');
+  });
+})();
+</script>
+</body>
+</html>
